@@ -1,0 +1,618 @@
+{
+  "name": "Invoice Processing",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "has:attachment"
+        },
+        "options": {
+          "downloadAttachments": true
+        }
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -272,
+        -400
+      ],
+      "id": "f45860bb-33b1-48be-8e0f-145d90f96ac1",
+      "name": "Get Invoice From Email",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "v3Kah6AkcwzWhVHk",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5d342213-9055-4bc7-8606-47eece4aeec0",
+              "leftValue": "={{ $binary.attachment_0.mimeType }}",
+              "rightValue": "pdf",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -272,
+        -160
+      ],
+      "id": "cd4790f2-b8a8-4571-bd16-75f5fca89865",
+      "name": "Route the Attachments"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "GPT-4O"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an invoice data extraction expert. Respond with valid JSON only. No markdown. No extra text."
+            },
+            {
+              "content": "={{ $json.system_prompt }}"
+            }
+          ]
+        },
+        "simplify": false,
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 1500
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        160,
+        -160
+      ],
+      "id": "4ee28600-88be-440c-afce-bb3e3a4b4e7c",
+      "name": "Message a model",
+      "credentials": {
+        "openAiApi": {
+          "id": "9imebdivYLC89WbY",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const response  = $input.first().json;\nconst raw       = response.output[0].content[0].text;\nconst emailData = $('Store Email Data').first().json;\n\nlet invoice;\ntry {\n  const cleaned = raw.replace(/```json|```/g, '').trim();\n  invoice = JSON.parse(cleaned);\n} catch(e) {\n  invoice = {\n    vendor_name:    'PARSE ERROR',\n    invoice_number: 'UNKNOWN',\n    total_amount:   0,\n    currency:       'USD',\n    parse_error:    e.message\n  };\n}\n\n// Validate required fields\nconst missing = [];\nif (!invoice.vendor_name)    missing.push('vendor_name');\nif (!invoice.invoice_number) missing.push('invoice_number');\nif (!invoice.total_amount)   missing.push('total_amount');\nif (!invoice.invoice_date)   missing.push('invoice_date');\n\nconst status = missing.length === 0 \n  ? 'Complete' \n  : 'Needs Review — Missing: ' + missing.join(', ');\n\n// Format line items as readable string for Google Sheets\nconst lineItemsStr = (invoice.line_items || []).map(item =>\n  item.description + ' x' + item.quantity + ' @ ' + item.unit_price + ' = ' + item.amount\n).join(' | ');\n\nreturn [{\n  json: {\n    // Invoice fields\n    vendor_name:     invoice.vendor_name     || '',\n    vendor_email:    invoice.vendor_email    || '',\n    vendor_address:  invoice.vendor_address  || '',\n    invoice_number:  invoice.invoice_number  || '',\n    invoice_date:    invoice.invoice_date    || '',\n    due_date:        invoice.due_date        || '',\n    subtotal:        invoice.subtotal        || 0,\n    tax_amount:      invoice.tax_amount      || 0,\n    tax_rate:        invoice.tax_rate        || '',\n    total_amount:    invoice.total_amount    || 0,\n    currency:        invoice.currency        || 'USD',\n    payment_terms:   invoice.payment_terms   || '',\n    notes:           invoice.notes           || '',\n    line_items:      lineItemsStr,\n    // Email metadata from Store Email Data node\n    email_subject:   emailData.email_subject || '',\n    email_from:      emailData.email_from    || '',\n    email_date:      emailData.email_date    || '',\n    email_id:        emailData.email_id      || '',\n    // Processing metadata\n    status:          status,\n    missing_fields:  missing.join(', '),\n    needs_review:    missing.length > 0,\n    processed_at:    new Date().toISOString(),\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        -400
+      ],
+      "id": "74a18434-d1c4-4cde-a309-016cd0f24e03",
+      "name": "Parse Invoice Data"
+    },
+    {
+      "parameters": {
+        "jsCode": "const email  = $input.first().json;\nconst binary = $input.first().binary;\n\n// Find the PDF in binary data\n// Gmail node stores attachments as attachment_0, attachment_1 etc\nlet pdfBinary = null;\nlet pdfName   = 'invoice.pdf';\n\n// Loop through all binary keys to find the PDF\nfor (const key of Object.keys(binary || {})) {\n  const file = binary[key];\n  if (\n    file.mimeType === 'application/pdf' ||\n    file.fileExtension === 'pdf' ||\n    (file.fileName || '').toLowerCase().endsWith('.pdf')\n  ) {\n    pdfBinary = file;\n    pdfName   = file.fileName || file.filename || key + '.pdf';\n    break;\n  }\n}\n\nif (!pdfBinary) {\n  // Log what we have for debugging\n  throw new Error('No PDF found. Binary keys available: ' + Object.keys(binary || {}).join(', '));\n}\n\nreturn [{\n  json: {\n    email_subject:  email.subject                       || '',\n    email_from:     email.from?.value?.[0]?.address    || '',\n    email_date:     email.date                          || new Date().toISOString(),\n    email_id:       email.id                            || '',\n    pdf_name:       pdfName,\n    pdf_mime:       pdfBinary.mimeType                  || 'application/pdf',\n    pdf_size:       pdfBinary.fileSize                  || 0,\n  },\n  binary: {\n    pdf_file: pdfBinary  // pass the binary PDF forward\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -32,
+        -400
+      ],
+      "id": "ccbe509d-1f79-4ac0-8dcd-1a3d00f66fad",
+      "name": "Extract PDF Content"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ca74cfba-a65e-40bb-a456-7ccd923568c9",
+              "name": "email_subject",
+              "value": "={{ $json.email_subject }}",
+              "type": "string"
+            },
+            {
+              "id": "f7b329ec-bbab-416a-aee9-94b19105f0e8",
+              "name": "email_from",
+              "value": "={{ $json.email_from }}",
+              "type": "string"
+            },
+            {
+              "id": "b97be979-8e05-47b8-a11e-dba05e0aa4d9",
+              "name": "email_date",
+              "value": "={{ $json.email_date }}",
+              "type": "string"
+            },
+            {
+              "id": "27aaba67-9a21-4fae-9d89-893b44d0bdfd",
+              "name": "email_id",
+              "value": "={{ $json.email_id }}",
+              "type": "string"
+            },
+            {
+              "id": "3c328a10-e070-4914-9f4a-c9a99f98d505",
+              "name": "pdf_name",
+              "value": "={{ $json.pdf_name }}",
+              "type": "string"
+            },
+            {
+              "id": "73b97a36-08df-409a-a551-add9d9f19bde",
+              "name": "pdf_content",
+              "value": "={{ $json.pdf_mime }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -32,
+        -160
+      ],
+      "id": "e3b78d7c-f7aa-4e02-aae4-fd452932a544",
+      "name": "Store Email Data"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nconst systemPrompt = [\n  'You are an invoice data extraction expert.',\n  'Extract all information from this invoice PDF.',\n  'Respond with valid JSON only. No markdown. No extra text.',\n  '',\n  'Extract these exact fields:',\n  '- vendor_name: company that issued the invoice',\n  '- vendor_email: vendor email if present',\n  '- vendor_address: vendor address if present',\n  '- invoice_number: unique invoice ID',\n  '- invoice_date: date invoice was issued (YYYY-MM-DD)',\n  '- due_date: payment due date (YYYY-MM-DD)',\n  '- line_items: array of {description, quantity, unit_price, amount}',\n  '- subtotal: amount before tax (number)',\n  '- tax_amount: tax amount (number)',\n  '- tax_rate: tax percentage if shown',\n  '- total_amount: final total (number)',\n  '- currency: USD/GBP/EUR etc',\n  '- payment_terms: e.g. Net 30',\n  '- notes: any additional notes on invoice',\n  '',\n  'If a field is not found use null.',\n  'For dates always use YYYY-MM-DD format.',\n  'For amounts always use numbers not strings.',\n  '',\n  'Return ONLY this JSON structure:',\n  '{\"vendor_name\":\"...\", \"vendor_email\":null, \"vendor_address\":\"...\",',\n  '\"invoice_number\":\"...\", \"invoice_date\":\"2024-01-15\", \"due_date\":\"2024-02-15\",',\n  '\"line_items\":[{\"description\":\"...\", \"quantity\":1, \"unit_price\":100, \"amount\":100}],',\n  '\"subtotal\":100, \"tax_amount\":10, \"tax_rate\":\"10%\", \"total_amount\":110,',\n  '\"currency\":\"USD\", \"payment_terms\":\"Net 30\", \"notes\":null}'\n].join('\\n');\n\nreturn [{\n  json: {\n    system_prompt: systemPrompt,\n    pdf_content:   input.pdf_content,\n    pdf_name:      input.pdf_name,\n    email_subject: input.email_subject,\n    email_from:    input.email_from,\n    email_date:    input.email_date,\n    email_id:      input.email_id,\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        -400
+      ],
+      "id": "2087e55e-039f-4f21-a53c-a88ac28ae8d7",
+      "name": "Build Invoice Prompt"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1S1xWV1J1Pv5Lo-EKyvh2JFjiJpE4DBAkrsAnewteqmw",
+          "mode": "list",
+          "cachedResultName": "Invoice Tracker",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1S1xWV1J1Pv5Lo-EKyvh2JFjiJpE4DBAkrsAnewteqmw/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1S1xWV1J1Pv5Lo-EKyvh2JFjiJpE4DBAkrsAnewteqmw/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Vendor": "={{ $json.vendor_name }}",
+            "Invoice Number": "={{ $json.invoice_number }}",
+            "Invoice Data": "={{ $json.invoice_date }}",
+            "Due Date": "={{ $json.due_date }}",
+            "Subtotal": "={{ $json.subtotal }}",
+            "Tax": "={{ $json.tax_amount }}",
+            "Total": "={{ $json.total_amount }}",
+            "Currency": "={{ $json.currency }}",
+            "Email Subject": "={{ $json.email_subject }}",
+            "Status": "={{ $json.status }}",
+            "Processed At": "={{ $json.processed_at }}",
+            "Date": "={{ $json.processed_at }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Vendor",
+              "displayName": "Vendor",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Invoice Number",
+              "displayName": "Invoice Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Invoice Data",
+              "displayName": "Invoice Data",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Due Date",
+              "displayName": "Due Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Subtotal",
+              "displayName": "Subtotal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Tax",
+              "displayName": "Tax",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Total",
+              "displayName": "Total",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Currency",
+              "displayName": "Currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Email Subject",
+              "displayName": "Email Subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Processed At",
+              "displayName": "Processed At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        464,
+        -176
+      ],
+      "id": "280f8588-d446-4c23-812e-b1e58ef018f6",
+      "name": "Log Invoice",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xGAUkkrQwDN6MMiE",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0AH54C6V18",
+          "mode": "list",
+          "cachedResultName": "finance"
+        },
+        "text": "This invoice requires your review.",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        704,
+        -384
+      ],
+      "id": "2f2dd92c-bf2b-4ce8-8b10-97ffd57c26c9",
+      "name": "Alert for Manual Review",
+      "webhookId": "0ae181c0-5c5a-4e78-8a9f-9fe484213b10",
+      "credentials": {
+        "slackApi": {
+          "id": "dG4NfQhcvZvMrqXT",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "93c6c2d3-4c4b-49a5-a3e5-11e3ad1bff5d",
+              "leftValue": "={{ $('Parse Invoice Data').item.json.needs_review }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        704,
+        -160
+      ],
+      "id": "fe336eb4-ea94-49e0-9924-1a6104f506c9",
+      "name": "Check for Review"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0AH54C6V18",
+          "mode": "list",
+          "cachedResultName": "finance"
+        },
+        "text": "=▫ *Invoice Processed*  \n\n*Vendor:* {{ $json.Vendor }} \n*Invoice #:* {{ $json['Invoice Number'] }} \n*Invoice Date:* {{ $json['Invoice Data'] }} *Due Date:* {{ $json['Due Date'] }} \n*Total:* {{ $json.Currency }} {{ $json.Total }} \n*Email From:*  {{ $('Parse Invoice Data').item.json.email_from }}\n*Email Subject:* {{ $('Parse Invoice Data').item.json.email_subject }}\n*Status:* {{ $json.Status }} ",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        960,
+        -144
+      ],
+      "id": "e20938fd-5c6f-4f37-9067-f3107a623441",
+      "name": "Send Invoice Message",
+      "webhookId": "0cd4af36-21a5-47df-86e7-d393f962c583",
+      "credentials": {
+        "slackApi": {
+          "id": "dG4NfQhcvZvMrqXT",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "thread",
+        "operation": "addLabels",
+        "threadId": "={{ $('Parse Invoice Data').item.json.email_id }}",
+        "labelIds": [
+          "Label_2765469031397892391"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        -352
+      ],
+      "id": "dfbc95b3-0184-457e-aba0-d80b536180c0",
+      "name": "Label the Processed Email",
+      "webhookId": "d4a751d3-ddaf-4bb0-8df8-e5f5c4430b25",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "v3Kah6AkcwzWhVHk",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Get Invoice From Email": {
+      "main": [
+        [
+          {
+            "node": "Route the Attachments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route the Attachments": {
+      "main": [
+        [
+          {
+            "node": "Extract PDF Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Parse Invoice Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract PDF Content": {
+      "main": [
+        [
+          {
+            "node": "Store Email Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Email Data": {
+      "main": [
+        [
+          {
+            "node": "Build Invoice Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Invoice Prompt": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Invoice Data": {
+      "main": [
+        [
+          {
+            "node": "Log Invoice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Invoice": {
+      "main": [
+        [
+          {
+            "node": "Check for Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert for Manual Review": {
+      "main": [
+        []
+      ]
+    },
+    "Check for Review": {
+      "main": [
+        [
+          {
+            "node": "Alert for Manual Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Invoice Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Invoice Message": {
+      "main": [
+        [
+          {
+            "node": "Label the Processed Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "c3f20524-f60b-4429-b052-d5c39c34182a",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "bbe7b87944b53c93f1b79593ba958091696813f62a1f6c2987df35b3601c8848"
+  },
+  "id": "yctEwVrB7v3ApNJM",
+  "tags": []
+}
